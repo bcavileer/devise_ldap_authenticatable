@@ -7,3 +7,5 @@ test/ldap/openldap-data/*
 test/ldap/openldap-data/run/slapd.*
 test/rails_app/tmp
 pkg/*
+.idea
+
