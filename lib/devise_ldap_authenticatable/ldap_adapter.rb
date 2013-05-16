@@ -84,15 +84,18 @@ module Devise
       attr_reader :ldap, :login
 
       def initialize(params = {})
+        @params = params
+        split_username_domain(params[:login]) if params[:login]
+
         ldap_config = YAML.load(ERB.new(File.read(::Devise.ldap_config || "#{Rails.root}/config/ldap.yml")).result)[Rails.env]
         ldap_options = params
         ldap_config["ssl"] = :simple_tls if ldap_config["ssl"] === true
         ldap_options[:encryption] = ldap_config["ssl"].to_sym if ldap_config["ssl"]
 
         @ldap = Net::LDAP.new(ldap_options)
-        @ldap.host = ldap_config["host"]
+        @ldap.host = params[:host] || ldap_config[domain]["host"]
         @ldap.port = ldap_config["port"]
-        @ldap.base = ldap_config["base"]
+        @ldap.base = params[:base] || ldap_config[domain]["base"]
         @attribute = ldap_config["attribute"]
         @ldap_auth_username_builder = params[:ldap_auth_username_builder]
 
@@ -101,9 +104,9 @@ module Devise
         @required_groups = ldap_config["required_groups"]
         @required_attributes = ldap_config["require_attribute"]
 
-        @ldap.auth ldap_config["admin_user"], ldap_config["admin_password"] if params[:admin]
+        @ldap.auth ldap_config[domain]["admin_user"], ldap_config[domain]["admin_password"] if params[:admin]
 
-        @login = params[:login]
+        @login = @username
         @password = params[:password]
         @new_password = params[:new_password]
       end
@@ -180,8 +183,7 @@ module Devise
       end
 
       def in_group?(group_name, group_attribute = DEFAULT_GROUP_UNIQUE_MEMBER_LIST_KEY)
-        admin_ldap = LdapConnect.admin
-
+        admin_ldap = LdapConnect.admin(ldap.host, ldap.base, domain)
         unless ::Devise.ldap_ad_group_check
           admin_ldap.search(:base => group_name, :scope => Net::LDAP::SearchScope_BaseObject) do |entry|
             unless entry[group_attribute].include? dn
@@ -208,7 +210,7 @@ module Devise
       def has_required_attribute?
         return true unless ::Devise.ldap_check_attributes
 
-        admin_ldap = LdapConnect.admin
+        admin_ldap = LdapConnect.admin(ldap.host, ldap.base, domain)
 
         user = find_ldap_user(admin_ldap)
 
@@ -223,8 +225,7 @@ module Devise
       end
 
       def user_groups
-        admin_ldap = LdapConnect.admin
-
+        admin_ldap = LdapConnect.admin(ldap.host, ldap.base, domain)
         DeviseLdapAuthenticatable::Logger.send("Getting groups for #{dn}")
         filter = Net::LDAP::Filter.eq("uniqueMember", dn)
         admin_ldap.search(:filter => filter, :base => @group_base).collect(&:dn)
@@ -247,8 +248,8 @@ module Devise
 
       private
 
-      def self.admin
-        ldap = LdapConnect.new(:admin => true).ldap
+      def self.admin(host, base, domain)
+        ldap = LdapConnect.new(:admin => true, :host => host, :base => base, :domain => domain).ldap
 
         unless ldap.bind
           DeviseLdapAuthenticatable::Logger.send("Cannot bind to admin LDAP user")
@@ -274,7 +275,7 @@ module Devise
         end
 
         if ::Devise.ldap_use_admin_to_bind
-          privileged_ldap = LdapConnect.admin
+          privileged_ldap = LdapConnect.admin(ldap.host, ldap.base, domain)
         else
           authenticate!
           privileged_ldap = self.ldap
@@ -284,6 +285,15 @@ module Devise
         privileged_ldap.modify(:dn => dn, :operations => operations)
       end
 
+      def split_username_domain(login)
+        splitted = login.split('@')
+        @username = splitted[0]
+        @domain = splitted[1][/[^\.]+/]
+      end
+
+      def domain
+        @params[:domain] || @domain
+      end
     end
 
   end
